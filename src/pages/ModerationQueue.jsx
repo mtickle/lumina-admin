@@ -49,30 +49,68 @@ export default function ModerationQueue() {
     };
 
     const approveCard = async (id) => {
-        await supabase.from('feed_cards').update({ is_approved: true }).eq('id', id);
+        console.log(`Attempting to approve card: ${id}`);
+
+        const { data, error } = await supabase
+            .from('feed_cards')
+            .update({ is_approved: true })
+            .eq('id', id)
+            .select();
+
+        if (error) {
+            console.error("Supabase Update Error:", error);
+            alert(`Approval failed: ${error.message}`);
+            return;
+        }
+
+        console.log("Successfully approved:", data);
         fetchQueue();
     };
 
     const inactivateCard = async (id) => {
         if (!window.confirm("Inactivate this card? It will be hidden from the feed but remain in the database.")) return;
-        await supabase.from('feed_cards').update({ active: false, is_approved: false }).eq('id', id);
+
+        console.log(`Attempting to inactivate card: ${id}`);
+
+        const { data, error } = await supabase
+            .from('feed_cards')
+            .update({ active: false, is_approved: false })
+            .eq('id', id)
+            .select();
+
+        if (error) {
+            console.error("Supabase Update Error:", error);
+            alert(`Inactivation failed: ${error.message}`);
+            return;
+        }
+
+        console.log("Successfully inactivated:", data);
         fetchQueue();
     };
 
     const saveEdit = async () => {
         try {
             const updatedPayload = JSON.parse(editPayload);
-            const { error } = await supabase
+            console.log(`Attempting to save edits for card: ${editingCard.id}`);
+
+            const { data, error } = await supabase
                 .from('feed_cards')
                 .update({ payload: updatedPayload })
-                .eq('id', editingCard.id);
+                .eq('id', editingCard.id)
+                .select();
 
-            if (error) throw error;
+            if (error) {
+                console.error("Supabase Update Error:", error);
+                alert(`Database Error: ${error.message}`);
+                return;
+            }
 
+            console.log("Successfully saved edits:", data);
             setEditingCard(null);
             fetchQueue();
         } catch (e) {
-            alert("Save failed. Ensure the JSON format is valid and your database connection is active.");
+            console.error("JSON Parsing Error:", e);
+            alert("Save failed. Ensure the JSON format is valid.");
         }
     };
 

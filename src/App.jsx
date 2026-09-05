@@ -7,7 +7,7 @@ import Login from './pages/Login';
 function App() {
   return (
     <AuthProvider>
-      <Router>
+      <Router basename={import.meta.env.BASE_URL}>
         <div className="min-h-screen bg-zinc-950 font-sans">
           <Routes>
             <Route path="/login" element={<Login />} />
