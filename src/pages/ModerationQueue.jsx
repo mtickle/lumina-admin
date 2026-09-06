@@ -136,7 +136,7 @@ export default function ModerationQueue() {
     };
 
     const totalPages = Math.ceil(totalCount / pageSize);
-    const cardTypes = ['ALL', 'PERSON', 'PLACE', 'VERSE', 'INSPIRATIONAL'];
+    const cardTypes = ['ALL', 'PERSON', 'PLACE', 'VERSE', 'INSPIRATIONAL', 'EVENT'];
 
     return (
         <div className="p-6 md:p-12 min-h-screen bg-zinc-950 text-white relative">
