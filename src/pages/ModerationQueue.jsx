@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { Check, Archive, Edit3, X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Check, Archive, Edit3, X, ChevronLeft, ChevronRight, FileText, Code } from 'lucide-react';
+import ReviewCard from '../components/ReviewCard';
 
 export default function ModerationQueue() {
     const [queue, setQueue] = useState([]);
@@ -8,14 +9,16 @@ export default function ModerationQueue() {
     const [loading, setLoading] = useState(true);
 
     // Controls
-    const [statusFilter, setStatusFilter] = useState('pending'); // 'pending', 'approved', 'all'
-    const [typeFilter, setTypeFilter] = useState('ALL'); // 'ALL', 'PERSON', 'PLACE', 'VERSE', 'INSPIRATIONAL'
+    const [statusFilter, setStatusFilter] = useState('pending');
+    const [typeFilter, setTypeFilter] = useState('ALL');
     const [page, setPage] = useState(1);
     const pageSize = 12;
 
     // Editing State
     const [editingCard, setEditingCard] = useState(null);
     const [editPayload, setEditPayload] = useState('');
+    const [deepDiveText, setDeepDiveText] = useState('');
+    const [activeTab, setActiveTab] = useState('json'); // 'json' | 'deepdive'
 
     useEffect(() => {
         fetchQueue();
@@ -24,7 +27,6 @@ export default function ModerationQueue() {
     const fetchQueue = async () => {
         setLoading(true);
 
-        // Base query: only pull active cards to hide soft-deleted records
         let query = supabase
             .from('feed_cards')
             .select('*', { count: 'exact' })
@@ -50,67 +52,86 @@ export default function ModerationQueue() {
 
     const approveCard = async (id) => {
         console.log(`Attempting to approve card: ${id}`);
-
-        const { data, error } = await supabase
-            .from('feed_cards')
-            .update({ is_approved: true })
-            .eq('id', id)
-            .select();
-
-        if (error) {
-            console.error("Supabase Update Error:", error);
-            alert(`Approval failed: ${error.message}`);
-            return;
-        }
-
-        console.log("Successfully approved:", data);
-        fetchQueue();
+        const { error } = await supabase.from('feed_cards').update({ is_approved: true }).eq('id', id).select();
+        if (error) alert(`Approval failed: ${error.message}`);
+        else fetchQueue();
     };
 
     const inactivateCard = async (id) => {
         if (!window.confirm("Inactivate this card? It will be hidden from the feed but remain in the database.")) return;
+        const { error } = await supabase.from('feed_cards').update({ active: false, is_approved: false }).eq('id', id).select();
+        if (error) alert(`Inactivation failed: ${error.message}`);
+        else fetchQueue();
+    };
 
-        console.log(`Attempting to inactivate card: ${id}`);
+    const openEditModal = async (card) => {
+        // Open the modal immediately with base JSON so the UI feels snappy
+        setEditingCard(card);
+        setEditPayload(JSON.stringify(card.payload, null, 2));
 
-        const { data, error } = await supabase
-            .from('feed_cards')
-            .update({ active: false, is_approved: false })
-            .eq('id', id)
-            .select();
+        // Temporarily show loading text in the deep dive tab
+        setDeepDiveText('Fetching deep dive content...');
+        setActiveTab('json'); // Default to JSON while it fetches
 
-        if (error) {
-            console.error("Supabase Update Error:", error);
-            alert(`Inactivation failed: ${error.message}`);
-            return;
+        // If the payload says it has a deep dive, fetch it from the secondary table
+        if (card.payload?.hasDeepDive) {
+            const { data, error } = await supabase
+                .from('deep_dives')
+                .select('content_markdown')
+                .eq('card_id', card.id)
+                .maybeSingle(); // maybeSingle returns null instead of an error if no row exists
+
+            if (data && data.content_markdown) {
+                setDeepDiveText(data.content_markdown);
+                setActiveTab('deepdive'); // Switch to deep dive tab once loaded
+            } else {
+                setDeepDiveText('');
+            }
+        } else {
+            setDeepDiveText('');
         }
-
-        console.log("Successfully inactivated:", data);
-        fetchQueue();
     };
 
     const saveEdit = async () => {
         try {
             const updatedPayload = JSON.parse(editPayload);
-            console.log(`Attempting to save edits for card: ${editingCard.id}`);
+            const hasContent = deepDiveText.trim().length > 0 && deepDiveText !== 'Fetching deep dive content...';
 
-            const { data, error } = await supabase
+            // 1. Update the payload boolean indicator
+            updatedPayload.hasDeepDive = hasContent;
+
+            // 2. Save the feed_card record
+            const { error: cardError } = await supabase
                 .from('feed_cards')
                 .update({ payload: updatedPayload })
-                .eq('id', editingCard.id)
-                .select();
+                .eq('id', editingCard.id);
 
-            if (error) {
-                console.error("Supabase Update Error:", error);
-                alert(`Database Error: ${error.message}`);
-                return;
+            if (cardError) throw cardError;
+
+            // 3. Handle the deep_dives table relation
+            if (hasContent) {
+                // Upsert inserts a new row, or updates the existing one if card_id matches
+                const { error: ddError } = await supabase
+                    .from('deep_dives')
+                    .upsert({
+                        card_id: editingCard.id,
+                        content_markdown: deepDiveText
+                    }, { onConflict: 'card_id' });
+
+                if (ddError) throw ddError;
+            } else {
+                // If they cleared the text entirely, safely delete the relational row
+                await supabase
+                    .from('deep_dives')
+                    .delete()
+                    .eq('card_id', editingCard.id);
             }
 
-            console.log("Successfully saved edits:", data);
             setEditingCard(null);
             fetchQueue();
         } catch (e) {
-            console.error("JSON Parsing Error:", e);
-            alert("Save failed. Ensure the JSON format is valid.");
+            console.error("Save Error:", e);
+            alert("Save failed. Ensure JSON is valid and your database connection is active.");
         }
     };
 
@@ -123,7 +144,6 @@ export default function ModerationQueue() {
                 <h1 className="text-3xl font-bold tracking-wide">Content Library</h1>
 
                 <div className="flex flex-col md:flex-row gap-4 w-full xl:w-auto">
-                    {/* Status Filters */}
                     <div className="flex bg-zinc-900 rounded-lg p-1 border border-zinc-800 shrink-0">
                         {['pending', 'approved', 'all'].map(f => (
                             <button
@@ -136,7 +156,6 @@ export default function ModerationQueue() {
                         ))}
                     </div>
 
-                    {/* Type Filters */}
                     <div className="flex flex-wrap bg-zinc-900 rounded-lg p-1 border border-zinc-800 gap-1 shrink-0">
                         {cardTypes.map(type => (
                             <button
@@ -162,10 +181,7 @@ export default function ModerationQueue() {
                                 card={card}
                                 onApprove={() => approveCard(card.id)}
                                 onDelete={() => inactivateCard(card.id)}
-                                onEdit={() => {
-                                    setEditingCard(card);
-                                    setEditPayload(JSON.stringify(card.payload, null, 2));
-                                }}
+                                onEdit={() => openEditModal(card)}
                             />
                         ))}
                     </div>
@@ -196,24 +212,60 @@ export default function ModerationQueue() {
                 </>
             )}
 
-            {/* Massively Expanded Edit Modal */}
+            {/* Tabbed Edit Modal */}
             {editingCard && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm p-4 md:p-8">
                     <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-5xl flex flex-col h-[90vh]">
-                        <div className="flex justify-between items-center p-6 border-b border-zinc-800">
-                            <h3 className="font-bold text-xl text-sky-400">Edit Payload: {editingCard.card_type}</h3>
-                            <button onClick={() => setEditingCard(null)} className="text-zinc-400 hover:text-white transition-colors">
-                                <X size={28} />
-                            </button>
+
+                        {/* Header & Tabs */}
+                        <div className="flex flex-col border-b border-zinc-800">
+                            <div className="flex justify-between items-center p-6 pb-2">
+                                <h3 className="font-bold text-xl text-sky-400">Edit Payload: {editingCard.card_type}</h3>
+                                <button onClick={() => setEditingCard(null)} className="text-zinc-400 hover:text-white transition-colors">
+                                    <X size={28} />
+                                </button>
+                            </div>
+                            <div className="flex gap-6 px-6 pt-2">
+                                <button
+                                    onClick={() => setActiveTab('json')}
+                                    className={`flex items-center gap-2 pb-3 font-semibold text-sm border-b-2 transition-all ${activeTab === 'json' ? 'border-sky-500 text-sky-400' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
+                                >
+                                    <Code size={16} /> Base Metadata
+                                </button>
+                                <button
+                                    onClick={() => setActiveTab('deepdive')}
+                                    className={`flex items-center gap-2 pb-3 font-semibold text-sm border-b-2 transition-all ${activeTab === 'deepdive' ? 'border-sky-500 text-sky-400' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
+                                >
+                                    <FileText size={16} /> Deep Dive
+                                </button>
+                            </div>
                         </div>
+
+                        {/* Editor Panes */}
                         <div className="p-6 flex-grow overflow-hidden flex flex-col">
-                            <label className="text-xs text-zinc-400 mb-3 uppercase tracking-wider font-semibold">Raw JSON Data</label>
-                            <textarea
-                                value={editPayload}
-                                onChange={(e) => setEditPayload(e.target.value)}
-                                className="w-full flex-grow bg-zinc-950 border border-zinc-800 rounded-lg p-6 font-mono text-base text-sky-300 focus:outline-none focus:border-sky-500 resize-none leading-relaxed shadow-inner"
-                            />
+                            {activeTab === 'json' ? (
+                                <>
+                                    <label className="text-xs text-zinc-400 mb-3 uppercase tracking-wider font-semibold">Raw JSON (Excludes Deep Dive)</label>
+                                    <textarea
+                                        value={editPayload}
+                                        onChange={(e) => setEditPayload(e.target.value)}
+                                        className="w-full flex-grow bg-zinc-950 border border-zinc-800 rounded-lg p-6 font-mono text-base text-sky-300 focus:outline-none focus:border-sky-500 resize-none shadow-inner"
+                                    />
+                                </>
+                            ) : (
+                                <>
+                                    <label className="text-xs text-zinc-400 mb-3 uppercase tracking-wider font-semibold">Article Content (Plain Text / Markdown)</label>
+                                    <textarea
+                                        value={deepDiveText}
+                                        onChange={(e) => setDeepDiveText(e.target.value)}
+                                        placeholder="Paste article content here. Newlines are safe."
+                                        className="w-full flex-grow bg-zinc-950 border border-zinc-800 rounded-lg p-6 font-sans text-base text-zinc-300 focus:outline-none focus:border-sky-500 resize-none leading-relaxed shadow-inner whitespace-pre-wrap"
+                                    />
+                                </>
+                            )}
                         </div>
+
+                        {/* Actions */}
                         <div className="p-6 border-t border-zinc-800 flex justify-end gap-4 bg-zinc-900/50 rounded-b-xl">
                             <button
                                 onClick={() => setEditingCard(null)}
@@ -231,71 +283,6 @@ export default function ModerationQueue() {
                     </div>
                 </div>
             )}
-        </div>
-    );
-}
-
-function ReviewCard({ card, onApprove, onDelete, onEdit }) {
-    const payload = card.payload || {};
-    const title = card.card_type === 'PERSON' ? card.metadata_anchor.split(':')[0] : (payload.locationName || card.metadata_anchor);
-    const description = payload.description || payload.hookText || payload.verseText || payload.quote || 'No description';
-    const imageUrl = payload.imageUrl || payload.mapImageUrl || payload.bgUrl;
-
-    const previewImage = (imageUrl && !imageUrl.includes('source.unsplash.com'))
-        ? imageUrl
-        : `https://picsum.photos/seed/${encodeURIComponent(payload.imageKeyword || 'lumina')}/400/600`;
-
-    return (
-        <div className="flex flex-col bg-zinc-900 rounded-xl overflow-hidden border border-zinc-800 shadow-xl">
-            <div className="relative h-48 w-full bg-zinc-800 group">
-                <img
-                    src={previewImage}
-                    alt="Card preview"
-                    className="absolute inset-0 w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity"
-                />
-                <div className="absolute top-2 left-2 flex gap-2">
-                    <span className="bg-black/80 backdrop-blur px-2 py-1 rounded text-xs font-bold text-white tracking-wider">
-                        {card.card_type}
-                    </span>
-                    {card.is_approved && (
-                        <span className="bg-emerald-500/80 backdrop-blur px-2 py-1 rounded text-xs font-bold text-white tracking-wider">
-                            APPROVED
-                        </span>
-                    )}
-                </div>
-                <button
-                    onClick={onEdit}
-                    className="absolute top-2 right-2 p-2 bg-black/60 hover:bg-sky-600 backdrop-blur rounded-lg text-white transition-colors opacity-0 group-hover:opacity-100"
-                    title="Edit JSON"
-                >
-                    <Edit3 size={16} />
-                </button>
-            </div>
-
-            <div className="p-4 flex-grow flex flex-col">
-                <h3 className="text-white font-bold text-lg mb-2 line-clamp-1">{title}</h3>
-                <p className="text-zinc-400 text-sm line-clamp-3 mb-4 flex-grow">
-                    {description}
-                </p>
-
-                <div className="flex gap-2 mt-auto pt-4 border-t border-zinc-800">
-                    <button
-                        onClick={onDelete}
-                        className="flex-1 flex items-center justify-center gap-2 py-2 rounded-lg bg-orange-500/10 text-orange-500 hover:bg-orange-500/20 transition-colors"
-                        title="Inactivate"
-                    >
-                        <Archive size={18} />
-                    </button>
-                    {!card.is_approved && (
-                        <button
-                            onClick={onApprove}
-                            className="flex-1 flex items-center justify-center gap-2 py-2 rounded-lg bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20 transition-colors"
-                        >
-                            <Check size={18} /> Approve
-                        </button>
-                    )}
-                </div>
-            </div>
         </div>
     );
 }
